@@ -1,0 +1,69 @@
+model:
+  d_model: 32
+  num_heads: 2
+  num_blocks: 2
+  d_ff: 64
+  d_embed: 64
+  max_sites: 16
+  vocab_size: 4
+
+physics:
+  t: 1.0
+  U: 4.0
+  Lx: 2
+  Ly: 2
+  n_up: 2
+  n_down: 2
+  pbc: true
+
+jepa:
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 10
+  warmup_epochs: 1
+  grad_clip: 1.0
+  lambda_sigreg: 0.09
+  sigreg_num_proj: 128
+  sigreg_knots: 17
+  mask_ratio: 0.25
+  mask_block_size: 1
+  predictor_layers: 2
+  predictor_heads: 4
+  n_pretrain_samples: 10000
+
+vmc:
+  exact_sampling: true
+  keep_best_state: true
+  lr: 1.0e-3
+  min_lr: 1.0e-4
+  lr_schedule_mode: "stage_cosine"
+  force_real: false
+  weight_decay: 0.0
+  n_chains: 512
+  n_sweeps: 10
+  n_thermalize: 200
+  n_steps: 1200
+  grad_clip: 1.0
+  e_loc_clip: 0.0
+  log_amp_reg: 0.0
+  log_amp_reg_decay_steps: 0
+  phase_reg: 0.0
+  use_sr: false
+  sr_diag_shift: 0.01
+  precision: "bf16"
+
+uramp:
+  enabled: true
+  schedule:
+    - {U: 0.0, steps: 300}
+    - {U: 1.0, steps: 200}
+    - {U: 2.0, steps: 200}
+    - {U: 3.0, steps: 200}
+    - {U: 4.0, steps: 300}
+
+experiment:
+  seed: 42
+  device: "cuda"
+  save_dir: "results"
+  log_interval: 50

@@ -1,0 +1,70 @@
+# Smoke-test hyperparameters for quick VMC iteration
+
+model:
+  d_model: 128
+  num_heads: 4
+  num_blocks: 4
+  d_ff: 256
+  d_embed: 64
+  max_sites: 144
+  vocab_size: 4
+
+physics:
+  t: 1.0
+  U: 4.0
+  Lx: 4
+  Ly: 4
+  n_up: -1
+  n_down: -1
+  pbc: true
+
+jepa:
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 100
+  warmup_epochs: 5
+  grad_clip: 1.0
+  lambda_sigreg: 0.09
+  sigreg_num_proj: 256
+  sigreg_knots: 17
+  mask_ratio: 0.25
+  mask_block_size: 2
+  predictor_layers: 2
+  predictor_heads: 4
+  n_pretrain_samples: 200000
+
+vmc:
+  lr: 1.0e-3
+  min_lr: 1.0e-4
+  lr_schedule_mode: "stage_cosine"
+  keep_best_state: true
+  exact_sampling: false
+  force_real: false
+  weight_decay: 0.0
+  n_chains: 256
+  n_sweeps: 10
+  n_thermalize: 100
+  n_steps: 640
+  grad_clip: 1.0
+  e_loc_clip: 0.0
+  log_amp_reg: 0.0
+  log_amp_reg_decay_steps: 0
+  phase_reg: 0.0
+  use_sr: false
+  sr_diag_shift: 0.01
+  precision: "bf16"
+
+uramp:
+  enabled: true
+  schedule:
+    - {U: 0.0, steps: 80}
+    - {U: 1.0, steps: 80}
+    - {U: 2.0, steps: 80}
+    - {U: 4.0, steps: 400}
+
+experiment:
+  seed: 42
+  device: "cuda"
+  save_dir: "results"
+  log_interval: 20

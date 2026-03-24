@@ -1,0 +1,86 @@
+# Default hyperparameters for Lattice-JEPA
+
+# ---- Model ----
+model:
+  d_model: 64
+  num_heads: 4
+  num_blocks: 4  # layers (increased from 2, following Gu et al.)
+  d_ff: 64  # feedforward dim (unused when use_layernorm=false: single-layer FFN)
+  d_embed: 64  # JEPA projection space
+  max_sites: 144  # up to 12x12 lattice
+  vocab_size: 4  # {empty, up, down, double}
+  use_layernorm: false  # NQS-style: no LayerNorm (following Gu et al.)
+  # Backflow determinant head
+  head_mode: "backflow_det"  # "scalar" or "backflow_det"
+  n_determinants: 4  # K: number of Slater determinants
+
+# ---- Physics ----
+physics:
+  t: 1.0  # hopping amplitude (energy unit)
+  U: 4.0  # on-site repulsion
+  Lx: 4  # lattice width
+  Ly: 4  # lattice height
+  n_up: -1  # -1 means half-filling (auto-set to N_sites/2)
+  n_down: -1
+  pbc: true  # periodic boundary conditions
+
+# ---- JEPA Pretraining ----
+jepa:
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 100
+  warmup_epochs: 5
+  grad_clip: 1.0
+  lambda_sigreg: 0.09
+  sigreg_num_proj: 256
+  sigreg_knots: 17
+  mask_ratio: 0.25
+  mask_block_size: 2  # 2x2 block for 4x4, 3x3 for 6x6+
+  predictor_layers: 2
+  predictor_heads: 4
+  n_pretrain_samples: 200000
+
+# ---- VMC Training ----
+vmc:
+  lr: 5.0e-4
+  weight_decay: 0.0  # no weight decay for VMC (biases ansatz)
+  n_chains: 4096  # MCMC chains (following Gu et al.)
+  n_sweeps: 10  # MCMC sweeps between samples (decorrelation)
+  n_thermalize: 100  # MCMC thermalization steps
+  n_steps: 5000  # VMC optimization steps
+  grad_clip: 1.0
+  e_loc_clip: 5.0  # clip local energy outliers beyond k*sigma
+  log_amp_reg: 0.0
+  log_amp_reg_decay_steps: 0
+  phase_reg: 0.0
+  use_sr: true  # use SR (stochastic reconfiguration)
+  sr_optimizer: "march"  # "minsr" or "march" (MARCH = MinSR + momentum + adaptive scaling)
+  sr_diag_shift: 0.001  # reduced from 0.01 (following Gu et al.: lambda=0.001)
+  sr_lr: 0.1  # SR norm constraint (following Gu et al.: 0.1 constant)
+  sr_n_chains: 4096  # same as n_chains (backflow det is cheaper per-param than scalar)
+  sr_min_U: 0.0  # use SR from the start (backflow det needs SR)
+  sr_momentum: 0.95  # MARCH momentum (mu)
+  sr_beta: 0.995  # MARCH adaptive second moment decay
+  sr_norm_decay_start: 8000  # step after which norm constraint decays as 1/t
+  sr_chunk_size: 32  # vmap chunk size for Jacobian computation
+  precision: "fp32"  # float32 for VMC (bf16 corrupts REINFORCE gradients)
+  use_symmetry: false  # disabled: Gu et al. don't use explicit symmetry projection
+  force_real: false  # not needed: determinant handles signs naturally
+  marshall_sign: false  # disabled: determinant handles signs naturally
+
+# ---- U-ramping ----
+uramp:
+  enabled: true
+  schedule:
+    - {U: 0.0, steps: 500}   # free particles
+    - {U: 1.0, steps: 500}   # weak coupling
+    - {U: 2.0, steps: 500}   # moderate
+    - {U: 4.0, steps: 2000}  # target — most steps here
+
+# ---- Experiment ----
+experiment:
+  seed: 42
+  device: "cuda"
+  save_dir: "results"
+  log_interval: 25
