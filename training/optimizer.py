@@ -301,41 +301,40 @@ class MARCH:
         """
         N_s = configs.shape[0]
         device = configs.device
+        sqrt_Ns = N_s ** 0.5
 
         # 1. Compute Jacobian
         with torch.enable_grad():
             O = self._compute_jacobian(configs)  # (N_s, N_params)
 
-        # 2. Center the Jacobian
-        O_bar = O - O.mean(dim=0, keepdim=True)
+        # 2. Center and normalize the Jacobian: Ō = (O - mean(O)) / √N_s
+        O_bar = (O - O.mean(dim=0, keepdim=True)) / sqrt_Ns
 
-        # 3. Centered local energies (scaled by -1 for energy minimization)
+        # 3. Centered and normalized local energies: ε̃ = -(E_loc - <E_loc>) / √N_s
         e_mean = e_loc.real.mean()
-        e_centered = -(e_loc.real - e_mean)  # negative sign: minimize energy
+        e_centered = -(e_loc.real - e_mean) / sqrt_Ns
 
         # 4. Compute adaptive scaling: v^{-1/4}
-        # v tracks squared changes between consecutive updates
-        # For stability, clamp v away from zero
         v_inv_quarter = (self.v.clamp(min=1e-10) ** (-0.25))  # (N_params,)
 
         # 5. Build the Woodbury system
-        # U = O_bar @ diag(v^{-1/4})  -> (N_s, N_params) @ diag -> (N_s, N_params)
+        # U = Ō @ diag(v^{-1/4})
         U = O_bar * v_inv_quarter.unsqueeze(0)  # (N_s, N_params)
 
-        # zeta = e_centered - O_bar @ phi
+        # ζ = ε̃ - Ō @ φ
         zeta = e_centered - O_bar @ self.phi  # (N_s,)
 
-        # Kernel: K = U @ U^T + lambda * I  -> (N_s, N_s)
+        # Kernel: K = U @ U^T + λI  (N_s, N_s)
         K = U @ U.t()  # (N_s, N_s)
-        K.diagonal().add_(self.damping * N_s)  # scale damping by N_s for stability
+        K.diagonal().add_(self.damping)
 
-        # Solve: K @ pi_hat = zeta
+        # Solve: K @ π̂ = ζ
         try:
             pi_hat = torch.linalg.solve(K, zeta)
         except torch.linalg.LinAlgError:
             pi_hat = K.pinverse() @ zeta
 
-        # 6. Compute update: dtheta = diag(v^{-1/4}) @ (U^T @ pi_hat) + phi
+        # 6. Compute update: dθ = D^{-1/4} (U^T π̂) + φ
         pi = U.t() @ pi_hat  # (N_params,)
         dtheta = v_inv_quarter * pi + self.phi  # (N_params,)
 
@@ -370,6 +369,14 @@ class MARCH:
     def set_norm_constraint(self, nc: float):
         """Update norm constraint."""
         self.norm_constraint = nc
+
+    def reset_state(self):
+        """Reset momentum and second moment (useful when U changes)."""
+        device = self.phi.device
+        self.phi = torch.zeros(self._n_params, device=device)
+        self.v = torch.ones(self._n_params, device=device)
+        self.prev_dtheta = torch.zeros(self._n_params, device=device)
+        # Don't reset step_count — it controls norm decay schedule
 
     # Compatibility with MinSR interface
     @property

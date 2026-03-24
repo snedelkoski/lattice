@@ -1,0 +1,93 @@
+# 4x4 full pipeline config: JEPA pretrain -> VMC finetune -> evaluate
+# Target: 4x4 Fermi-Hubbard, half-filling, U/t=4
+# ED reference: E/N = -1.0959
+# Hardware: RTX 3050 3.7GB VRAM — MARCH peak ~2.5GB with these settings
+
+# ---- Model ----
+model:
+  d_model: 128
+  num_heads: 4
+  num_blocks: 4       # 4 transformer layers (following Gu et al.)
+  d_ff: 128           # single-layer FFN (NQS-style, no layernorm)
+  d_embed: 64         # JEPA projection space
+  max_sites: 144
+  vocab_size: 4       # {empty, up, down, double}
+  use_layernorm: false # NQS-style (same arch for JEPA and VMC)
+  head_mode: "backflow_det"
+  n_determinants: 4   # K=4 determinants (8 up + 8 down electrons)
+
+# ---- Physics ----
+physics:
+  t: 1.0
+  U: 4.0
+  Lx: 4
+  Ly: 4
+  n_up: -1   # half-filling -> 8
+  n_down: -1 # half-filling -> 8
+  pbc: true
+
+# ---- JEPA Pretraining ----
+jepa:
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 100
+  warmup_epochs: 5
+  grad_clip: 1.0
+  lambda_sigreg: 0.09
+  sigreg_num_proj: 256
+  sigreg_knots: 17
+  mask_ratio: 0.25
+  mask_type: "block"       # 2x2 block masking for 4x4 lattice
+  mask_block_size: 2
+  predictor_layers: 2
+  predictor_heads: 4
+  n_pretrain_samples: 200000
+
+# ---- VMC Training ----
+vmc:
+  lr: 5.0e-4
+  weight_decay: 0.0        # no weight decay for VMC
+  n_chains: 512            # MCMC chains (limited by VRAM)
+  n_sweeps: 40             # 2.5 * Lx * Ly = 40 (following Gu et al.)
+  n_thermalize: 100
+  n_steps: 5000            # long training for convergence
+  grad_clip: 1.0
+  e_loc_clip: 5.0
+  log_amp_reg: 0.0
+  log_amp_reg_decay_steps: 0
+  phase_reg: 0.0
+  exact_sampling: false    # MCMC (Hilbert space too large for exact)
+  use_sr: true
+  sr_optimizer: "march"
+  sr_diag_shift: 0.001     # lambda = 0.001 (Gu et al.)
+  sr_lr: 0.1               # norm constraint = 0.1 (Gu et al.)
+  sr_n_chains: 512          # same as n_chains
+  sr_min_U: 0.0             # use SR from the start
+  sr_momentum: 0.95         # MARCH mu
+  sr_beta: 0.995            # MARCH beta
+  sr_norm_decay_start: 8000
+  sr_chunk_size: 32          # vmap chunk size for Jacobian
+  precision: "fp32"
+  use_symmetry: false
+  force_real: false
+  marshall_sign: false
+  keep_best_state: true
+  lr_schedule_mode: "global_cosine"
+  min_lr: 1.0e-5
+
+# ---- U-ramping ----
+uramp:
+  enabled: true
+  schedule:
+    - {U: 0.0, steps: 500}    # free particles — easy convergence
+    - {U: 1.0, steps: 500}    # weak coupling
+    - {U: 2.0, steps: 1000}   # moderate
+    - {U: 4.0, steps: 3000}   # target — most steps here
+
+# ---- Experiment ----
+experiment:
+  seed: 42
+  device: "cuda"
+  save_dir: "results"
+  log_interval: 25

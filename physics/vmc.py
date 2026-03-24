@@ -202,8 +202,13 @@ class VMCTrainer:
 
     def set_U(self, U: float):
         """Update the interaction strength U (for U-ramping)."""
+        old_U = self.U
         self.U = U
         self.hamiltonian = FermiHubbardHamiltonian(self.lattice, t=self.t, U=U)
+        # Reset MARCH momentum on U transitions to avoid stale gradients
+        if (old_U != U and self.sr_optimizer is not None
+                and hasattr(self.sr_optimizer, 'reset_state')):
+            self.sr_optimizer.reset_state()
 
     def _get_reg_coeff(self) -> float:
         """Get the current log-amplitude regularization coefficient."""

@@ -67,20 +67,25 @@ class BaseNQS(nn.Module, ABC):
             self.n_down = n_down
             self.n_electrons = n_up + n_down
 
-            # The transformer output is (B, N, d_model) — one vector per site.
-            # We need to produce orbital matrices M^k of shape (2*N, N_e)
-            # where 2*N = spin-up channels + spin-down channels.
-            #
-            # Following Gu et al.: a linear layer maps each site's d_model
-            # vector to K * N_e values for that site's up-row and K * N_e
-            # for that site's down-row.
-            #
-            # So: (B, N, d_model) -> (B, N, 2 * K * N_e)
-            # Reshape to (B, 2*N, K * N_e) then (B, K, 2*N, N_e)
-            self.orbital_head = nn.Linear(
-                d_model, 2 * n_determinants * self.n_electrons
-            )
-            # Initialize to small values for stable determinants near identity-ish
+            # Backflow orbital head.
+            # Option A (factored=True, default): SEPARATE up/down determinants
+            #   psi = sum_k det[Phi^k_up] * det[Phi^k_down]
+            #   Phi^k_up is (n_up x n_up), Phi^k_down is (n_down x n_down)
+            # Option B (factored=False): Combined determinant
+            #   psi = sum_k det[Phi^k]
+            #   Phi^k is (N_e x N_e) where N_e = n_up + n_down
+            self.factored_det = True  # can be toggled
+
+            if self.factored_det:
+                # Each site produces K * n_up (for up) + K * n_down (for down)
+                self.orbital_head = nn.Linear(
+                    d_model, n_determinants * (n_up + n_down)
+                )
+            else:
+                # Each site produces 2 * K * N_e (up rows + down rows)
+                self.orbital_head = nn.Linear(
+                    d_model, 2 * n_determinants * self.n_electrons
+                )
             nn.init.normal_(self.orbital_head.weight, std=0.01)
             nn.init.zeros_(self.orbital_head.bias)
         else:
@@ -141,12 +146,13 @@ class BaseNQS(nn.Module, ABC):
         self, h: torch.Tensor, configs: torch.Tensor
     ) -> torch.Tensor:
         """
-        Backflow determinant output head.
+        Backflow determinant output head with SEPARATE up/down determinants.
 
-        psi(n) = sum_{k=1}^{K} det[Phi^k(n)]
+        psi(n) = sum_{k=1}^{K} det[Phi^k_up(n)] * det[Phi^k_down(n)]
 
-        where Phi^k is formed by selecting rows of the orbital matrix M^k
-        that correspond to occupied orbitals in config n.
+        where Phi^k_up is (n_up x n_up) and Phi^k_down is (n_down x n_down).
+        This factored form naturally handles the fermionic sign structure
+        for each spin species independently.
 
         Args:
             h: (B, N, d_model) backbone output
@@ -156,70 +162,54 @@ class BaseNQS(nn.Module, ABC):
         """
         B, N, d = h.shape
         K = self.n_determinants
-        N_e = self.n_electrons
+        n_up = self.n_up
+        n_down = self.n_down
 
-        # Produce orbital coefficients: (B, N, 2 * K * N_e)
-        orb_raw = self.orbital_head(h)  # (B, N, 2*K*N_e)
+        # Produce orbital coefficients: (B, N, K * (n_up + n_down))
+        orb_raw = self.orbital_head(h)  # (B, N, K*(n_up+n_down))
 
-        # Reshape to separate spin-up and spin-down orbital rows:
-        # (B, N, 2, K, N_e) -> (B, 2, N, K, N_e) -> (B, K, 2*N, N_e)
-        orb = orb_raw.reshape(B, N, 2, K, N_e)
-        orb = orb.permute(0, 3, 2, 1, 4)  # (B, K, 2, N, N_e)
-        orb = orb.reshape(B, K, 2 * N, N_e)  # (B, K, 2N, N_e)
+        # Split into up and down orbital blocks
+        # (B, N, K*n_up), (B, N, K*n_down)
+        orb_up_raw, orb_down_raw = orb_raw.split([K * n_up, K * n_down], dim=-1)
 
-        # Build occupied-orbital indices from configs.
-        # For each config, we need to find which "rows" of the 2N orbital
-        # matrix are occupied.
-        #
-        # Row layout: rows 0..N-1 are spin-up orbitals for sites 0..N-1
-        #             rows N..2N-1 are spin-down orbitals for sites 0..N-1
-        #
+        # Reshape to (B, K, N, n_up) and (B, K, N, n_down)
+        orb_up = orb_up_raw.reshape(B, N, K, n_up).permute(0, 2, 1, 3)  # (B, K, N, n_up)
+        orb_down = orb_down_raw.reshape(B, N, K, n_down).permute(0, 2, 1, 3)  # (B, K, N, n_down)
+
+        # Get occupied site indices for each spin
         # Config encoding: 0=empty, 1=up, 2=down, 3=double
-        # Spin-up at site i: config[i] == 1 or config[i] == 3
-        # Spin-down at site i: config[i] == 2 or config[i] == 3
         has_up = (configs == 1) | (configs == 3)  # (B, N) bool
         has_down = (configs == 2) | (configs == 3)  # (B, N) bool
 
-        # Occupied row indices: first all up positions, then all down positions
-        # Since N_up and N_down are fixed, each config has exactly N_e occupied rows
-        up_indices = has_up.float()  # (B, N)
-        down_indices = has_down.float()  # (B, N)
+        # Get sorted occupied site indices
+        # Each sample has exactly n_up up-occupied sites and n_down down-occupied sites
+        up_occ_idx = has_up.float().argsort(dim=1, descending=True)[:, :n_up]  # (B, n_up)
+        up_occ_idx = up_occ_idx.sort(dim=1).values
+        down_occ_idx = has_down.float().argsort(dim=1, descending=True)[:, :n_down]  # (B, n_down)
+        down_occ_idx = down_occ_idx.sort(dim=1).values
 
-        # Build the selection mask: (B, 2N) with 1 where occupied
-        occ_mask = torch.cat([up_indices, down_indices], dim=1)  # (B, 2N)
+        # Select occupied rows from orbital matrices
+        # For up: orb_up is (B, K, N, n_up), select rows up_occ_idx -> (B, K, n_up, n_up)
+        up_idx_exp = up_occ_idx.unsqueeze(1).unsqueeze(-1).expand(B, K, n_up, n_up)
+        phi_up = torch.gather(orb_up, 2, up_idx_exp)  # (B, K, n_up, n_up)
 
-        # Get sorted indices of occupied rows for each sample
-        # Each sample has exactly N_e occupied positions
-        # We use topk or nonzero; since count is fixed, argsort the mask
-        # descending and take the first N_e
-        occ_idx = occ_mask.argsort(dim=1, descending=True)[:, :N_e]  # (B, N_e)
-        occ_idx = occ_idx.sort(dim=1).values  # sort for consistency
+        # For down: orb_down is (B, K, N, n_down), select rows down_occ_idx -> (B, K, n_down, n_down)
+        down_idx_exp = down_occ_idx.unsqueeze(1).unsqueeze(-1).expand(B, K, n_down, n_down)
+        phi_down = torch.gather(orb_down, 2, down_idx_exp)  # (B, K, n_down, n_down)
 
-        # Select rows from orbital matrices: Phi^k_{ij} = M^k_{occ_idx[i], j}
-        # orb: (B, K, 2N, N_e), occ_idx: (B, N_e)
-        # Need to gather: for each (b, k), select rows occ_idx[b] from orb[b, k]
-        occ_expanded = occ_idx.unsqueeze(1).unsqueeze(-1).expand(
-            B, K, N_e, N_e
-        )  # (B, K, N_e, N_e)
-        phi = torch.gather(
-            orb, 2, occ_expanded
-        )  # (B, K, N_e, N_e) — the Slater matrices
+        # Compute determinants: (B, K) for each spin
+        det_up = torch.linalg.det(phi_up)  # (B, K)
+        det_down = torch.linalg.det(phi_down)  # (B, K)
 
-        # Compute determinants: (B, K)
-        dets = torch.linalg.det(phi)  # (B, K)
-
-        # Wavefunction: psi = sum_k det[Phi^k]
-        psi = dets.sum(dim=1)  # (B,)
+        # Wavefunction: psi = sum_k det_up^k * det_down^k
+        psi = (det_up * det_down).sum(dim=1)  # (B,)
 
         # Convert to log_psi = log|psi| + i*arg(psi)
         log_abs_psi = torch.log(psi.abs() + 1e-30)
-        phase = torch.atan2(psi.imag, psi.real) if psi.is_complex() else torch.zeros_like(log_abs_psi)
 
-        # psi from real determinants is real-valued
-        # But can be negative, so we need to handle the sign
-        if not psi.is_complex():
-            # Real case: sign gives phase of 0 or pi
-            phase = torch.where(psi >= 0, torch.zeros_like(psi), torch.full_like(psi, torch.pi))
+        # psi from real determinants products is real-valued but can be negative
+        # sign gives phase of 0 or pi
+        phase = torch.where(psi >= 0, torch.zeros_like(psi), torch.full_like(psi, torch.pi))
 
         log_psi = torch.complex(log_abs_psi.float(), phase.float())
         return log_psi

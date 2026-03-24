@@ -25,7 +25,7 @@ from physics.hubbard import generate_random_configs
 
 
 def create_backbone(backbone_type: str, n_sites: int, cfg: dict) -> nn.Module:
-    """Create Transformer backbone."""
+    """Create Transformer backbone (same architecture as VMC model for clean transfer)."""
     model_cfg = cfg['model']
     if backbone_type == 'transformer':
         return TransformerNQS(
@@ -36,6 +36,7 @@ def create_backbone(backbone_type: str, n_sites: int, cfg: dict) -> nn.Module:
             d_ff=model_cfg['d_ff'],
             vocab_size=model_cfg['vocab_size'],
             max_sites=model_cfg['max_sites'],
+            use_layernorm=model_cfg.get('use_layernorm', True),
         )
     else:
         raise ValueError(f"Unknown backbone: {backbone_type}")
@@ -122,10 +123,18 @@ def pretrain(
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # Determine mask block size
+    # Determine masking strategy
+    mask_type = jepa_cfg.get('mask_type', 'block')
     block_size = jepa_cfg['mask_block_size']
     if Lx >= 6 or Ly >= 6:
         block_size = 3  # larger blocks for larger lattices
+    # For tiny lattices, block masking would mask everything -> use random
+    if mask_type == 'block' and block_size >= min(Lx, Ly):
+        print(f"WARNING: block_size={block_size} >= lattice dim ({Lx}x{Ly}), "
+              f"switching to random masking")
+        mask_type = 'random'
+
+    print(f"Masking: type={mask_type}, block_size={block_size}, ratio={jepa_cfg['mask_ratio']}")
 
     # Training loop
     history = {'loss': [], 'mse': [], 'sigreg': [], 'lr': []}
@@ -148,18 +157,14 @@ def pretrain(
                 batch_size=B,
                 Lx=Lx,
                 Ly=Ly,
-                mask_type='block',
+                mask_type=mask_type,
                 block_size=block_size,
                 mask_ratio=jepa_cfg['mask_ratio'],
                 device=device,
             )
 
             # Forward pass
-            if device == 'cuda':
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    outputs = jepa_model(batch_configs, masks)
-            else:
-                outputs = jepa_model(batch_configs, masks)
+            outputs = jepa_model(batch_configs, masks)
 
             loss = outputs['loss']
 

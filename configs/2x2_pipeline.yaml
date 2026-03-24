@@ -1,0 +1,87 @@
+# 2x2 full pipeline config: JEPA pretrain -> VMC finetune -> evaluate
+# Target: 2x2 Fermi-Hubbard, half-filling, U/t=4
+# Hilbert space: C(4,2)^2 = 36 configs -> exact sampling possible
+
+# ---- Model ----
+model:
+  d_model: 32
+  num_heads: 2
+  num_blocks: 2
+  d_ff: 32
+  d_embed: 32       # JEPA projection space
+  max_sites: 144
+  vocab_size: 4      # {empty, up, down, double}
+  use_layernorm: false  # same arch for JEPA and VMC (clean weight transfer)
+  head_mode: "backflow_det"
+  n_determinants: 2  # K=2 determinants (sufficient for 4 electrons)
+
+# ---- Physics ----
+physics:
+  t: 1.0
+  U: 4.0
+  Lx: 2
+  Ly: 2
+  n_up: -1   # half-filling -> 2
+  n_down: -1 # half-filling -> 2
+  pbc: true
+
+# ---- JEPA Pretraining ----
+jepa:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 64
+  epochs: 50
+  warmup_epochs: 3
+  grad_clip: 1.0
+  lambda_sigreg: 0.09
+  sigreg_num_proj: 64
+  sigreg_knots: 17
+  mask_ratio: 0.25
+  mask_type: "random"       # random masking for 2x2 (block_size=2 would mask everything)
+  mask_block_size: 1        # fallback; not used with mask_type=random
+  predictor_layers: 1
+  predictor_heads: 2
+  n_pretrain_samples: 10000
+
+# ---- VMC Training ----
+vmc:
+  lr: 5.0e-4
+  weight_decay: 0.0
+  n_chains: 64        # not used with exact_sampling, but needed for init
+  n_sweeps: 5
+  n_thermalize: 50
+  n_steps: 500
+  grad_clip: 1.0
+  e_loc_clip: 5.0
+  log_amp_reg: 0.0
+  log_amp_reg_decay_steps: 0
+  phase_reg: 0.0
+  exact_sampling: true  # enumerate all 36 configs
+  use_sr: true
+  sr_optimizer: "march"
+  sr_diag_shift: 0.001
+  sr_lr: 0.1
+  sr_n_chains: 64
+  sr_min_U: 0.0
+  sr_momentum: 0.95
+  sr_beta: 0.995
+  sr_norm_decay_start: 300
+  sr_chunk_size: 32
+  precision: "fp32"
+  use_symmetry: false
+  force_real: false
+  marshall_sign: false
+  keep_best_state: true
+  lr_schedule_mode: "global_cosine"
+  min_lr: 1.0e-5
+
+# ---- U-ramping ----
+uramp:
+  enabled: false  # direct U=4 on 2x2 (converges easily with exact sampling)
+
+# ---- Experiment ----
+experiment:
+  seed: 42
+  device: "cuda"
+  save_dir: "results"
+  log_interval: 10
